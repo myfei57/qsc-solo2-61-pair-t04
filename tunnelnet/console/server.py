@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
+from tunnelnet.ns import load_chain_document
 from tunnelnet.store import Store
 
 from . import handlers
@@ -18,8 +19,15 @@ from .seed import seed_defaults
 class Server:
     """Owns the runtime state and dispatches console requests."""
 
-    def __init__(self, store: Store, web_dir: str = "web") -> None:
-        self.runtime = Runtime(store)
+    def __init__(
+        self,
+        store: Store,
+        web_dir: str = "web",
+        chain_config: Mapping[str, object] | None = None,
+        chain_config_path: str = "",
+    ) -> None:
+        config = load_chain_document(chain_config_path) if chain_config_path else chain_config
+        self.runtime = Runtime(store, config)
         seed_defaults(self.runtime)
         self.web_dir = web_dir
         self.router = Router()
@@ -86,7 +94,12 @@ class Server:
         return [response.body]
 
 
-def create_application(store: Store, web_dir: str = "web") -> Server:
+def create_application(
+    store: Store,
+    web_dir: str = "web",
+    chain_config: Mapping[str, object] | None = None,
+    chain_config_path: str = "",
+) -> Server:
     """Build a ready to serve console for the supplied store."""
 
-    return Server(store, web_dir)
+    return Server(store, web_dir, chain_config, chain_config_path)

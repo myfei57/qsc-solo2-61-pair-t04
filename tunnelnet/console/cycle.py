@@ -2,57 +2,23 @@
 
 from __future__ import annotations
 
-from tunnelnet.ns import Stage, control_chain
-
-from .audit_log import record_event
+from .executor import execute_cycle
 from .http import Request, Response, json_response
 from .runtime import Runtime
 
 
 def run_cycle(rt: Runtime, request: Request) -> Response:
-    """Walk the whole chain once, in production order."""
+    """Walk the whole active chain once, pinned to its version for the run."""
 
-    cabin_id = request.str_field("cabin_id")
-    requester = request.str_field("requester", "operator")
-    zone = request.str_field("zone")
-    sensor_id = request.str_field("sensor_id", "sensor-1")
-    samples = request.float_list("samples")
-    fallback = request.float_field("value")
-    at = request.str_field("at")
-    watts = request.float_field("watts")
-
-    reading = sum(samples) / len(samples) if samples else fallback
-
-    approval = rt.access.approve(cabin_id, requester)
-    record_event(rt, "access_approved", approval.id)
-
-    alarmed = rt.env.sample(sensor_id, reading, at)
-
-    zones = rt.fire.activate_zones(zone)
-    rt.fire.handle_smoke(zone)
-    raised = rt.fire.raise_alarm(f"{zone}:{at}")
-
-    rt.patrol.check_in(cabin_id, at)
-
-    usage = rt.quota.add_usage(cabin_id, watts)
-
-    rt.drain.start_drain(cabin_id)
-    rt.drain.record_cycle(cabin_id, at)
-
-    record_event(rt, "cycle", cabin_id)
-    line = control_chain()
-
-    return json_response(
+    output, run = execute_cycle(rt, request)
+    payload = output.as_dict()
+    payload.update(
         {
-            "approval": approval.id,
-            "alarmed": alarmed,
-            "reading": reading,
-            "zones": zones,
-            "alarm_raised": raised,
-            "patrol_route": rt.patrol.route_len(),
-            "usage": usage,
-            "drain_runs": rt.drain.run_count(),
             "audit_count": rt.audit.count(),
-            "last_stage": Stage.AUDIT.value if line.contains(Stage.AUDIT) else "",
+            "last_stage": run.stage if run.status != "completed" else (run.completed_stages[-1] if run.completed_stages else ""),
+            "chain_version": run.chain.version,
+            "chain_fingerprint": run.chain.fingerprint,
+            "run_id": run.id,
         }
     )
+    return json_response(payload)

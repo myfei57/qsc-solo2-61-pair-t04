@@ -33,8 +33,20 @@ def to_csv(columns: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
 def audit_export(registry: AuditRegistry) -> tuple[list[str], list[list[str]]]:
     """Columns and rows for the linkage audit trail."""
 
-    columns = ["id", "event", "at"]
-    rows = [[record.id, record.event, record.at] for record in registry.list()]
+    columns = ["id", "event", "at", "chain_name", "chain_version", "chain_fingerprint", "run_id", "stage"]
+    rows = [
+        [
+            record.id,
+            record.event,
+            record.at,
+            record.chain_name,
+            record.chain_version,
+            record.chain_fingerprint,
+            record.run_id,
+            record.stage,
+        ]
+        for record in registry.list()
+    ]
     return columns, rows
 
 

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from tunnelnet.ns import control_chain
-
 from .http import Request, Response, json_response
 from .runtime import Runtime
 
@@ -46,12 +44,14 @@ class SimulationReport:
     ticks: list[Tick] = field(default_factory=list)
     final_audit_count: int = 0
     last_stage: str = ""
+    chain_version: str = ""
 
     def as_dict(self) -> dict[str, object]:
         return {
             "ticks": [tick.as_dict() for tick in self.ticks],
             "final_audit_count": self.final_audit_count,
             "last_stage": self.last_stage,
+            "chain_version": self.chain_version,
         }
 
 
@@ -66,7 +66,7 @@ def run_simulation(rt: Runtime, request: Request) -> Response:
 
     cabin_id = request.str_field("cabin_id", "cabin-1")
     sensor_id = request.str_field("sensor_id", "sensor-1")
-    chain = control_chain()
+    chain = rt.chains.get()
     stages = chain.stages
 
     steps: list[Tick] = []
@@ -90,5 +90,6 @@ def run_simulation(rt: Runtime, request: Request) -> Response:
         ticks=steps,
         final_audit_count=rt.audit.count(),
         last_stage="" if last is None else last.value,
+        chain_version=chain.version,
     )
     return json_response(report.as_dict())

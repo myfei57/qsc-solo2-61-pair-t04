@@ -6,8 +6,7 @@ from typing import TYPE_CHECKING
 
 from tunnelnet.cable import danger_count, healthy_count, load_factor
 from tunnelnet.cabin import status_summary
-from tunnelnet.ns import Stage, control_chain
-
+from tunnelnet.ns import Stage
 from .describe import collect as collect_describe
 from .telemetry import collect as collect_telemetry
 
@@ -20,7 +19,7 @@ def text_report(rt: "Runtime") -> str:
 
     describe = collect_describe(rt)
     telemetry = collect_telemetry(rt)
-    line = control_chain()
+    line = rt.chains.get()
     rows = [
         "tunnelnet control report",
         f"chain: {describe['chain']}",

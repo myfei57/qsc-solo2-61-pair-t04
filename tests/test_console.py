@@ -49,13 +49,25 @@ class ConsoleCase(unittest.TestCase):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
         self.assertEqual(health["status"], "ok")
-        self.assertEqual(health["kinds"], [])
+        self.assertEqual(health["kinds"], ["chain_pointer", "chain_version"])
 
         status, checks = self.call("GET", "/api/health/checks")
         self.assertEqual(status, 200)
         self.assertEqual(
             {check["name"] for check in checks["checks"]},
-            {"store", "access", "drain", "ventilation", "fire", "patrol", "quota", "cables", "environment", "audit"},
+            {
+                "store",
+                "control_chain",
+                "access",
+                "drain",
+                "ventilation",
+                "fire",
+                "patrol",
+                "quota",
+                "cables",
+                "environment",
+                "audit",
+            },
         )
 
         status, snapshot = self.call("GET", "/api/snapshot")
@@ -64,6 +76,8 @@ class ConsoleCase(unittest.TestCase):
             set(snapshot),
             {
                 "chain",
+                "chain_ref",
+                "active_chain_version",
                 "store",
                 "namespaces",
                 "cabins",
@@ -131,6 +145,122 @@ class ConsoleCase(unittest.TestCase):
         self.assertTrue(metrics["reset"])
         _, metrics = self.call("GET", "/api/metrics")
         self.assertEqual(metrics["requests"], 1)
+
+    def test_configurable_chain_versions_replay_and_cycle_boundary(self) -> None:
+        status, current = self.call("GET", "/api/chain")
+        self.assertEqual(status, 200)
+        self.assertEqual(current["last_stage"], "audit")
+        old_version = current["version"]
+        self.assertTrue(current["fingerprint"])
+
+        status, versions = self.call("GET", "/api/chain/versions")
+        self.assertEqual(status, 200)
+        self.assertEqual(versions["active_version"], old_version)
+        self.assertEqual(len(versions["versions"]), 1)
+
+        invalid = {
+            "name": "broken",
+            "stages": [{"stage": "access"}],
+            "required_stages": ["access", "environment", "ventilation", "fire", "patrol", "energy", "audit"],
+        }
+        status, body = self.call("POST", "/api/chain/publish", invalid)
+        self.assertEqual(status, 400)
+        self.assertIn("missing required stages", body["error"])
+
+        changed = {
+            "name": "tunnel-control-v2",
+            "required_stages": ["access", "environment", "ventilation", "fire", "patrol", "energy", "audit"],
+            "before": [
+                {"first": "access", "second": "fire"},
+                {"first": "environment", "second": "ventilation"},
+                {"first": "fire", "second": "patrol"},
+                {"first": "patrol", "second": "energy"},
+                {"first": "energy", "second": "audit"},
+            ],
+            "stages": [
+                {"stage": "access", "action": "approve and release the cabin door"},
+                {"stage": "environment", "action": "sample the environment and route alarms"},
+                {"stage": "ventilation", "action": "run the ventilation bank"},
+                {"stage": "fire", "action": "link the fire zones"},
+                {"stage": "patrol", "action": "walk the patrol route"},
+                {"stage": "energy", "action": "meter cabin power"},
+                {"stage": "audit", "action": "record the linkage audit"},
+            ],
+        }
+        status, published = self.call("POST", "/api/chain/publish", changed)
+        self.assertEqual(status, 200)
+        new_version = published["version"]
+        self.assertNotEqual(old_version, new_version)
+
+        status, repeated = self.call("POST", "/api/chain/publish", changed)
+        self.assertEqual(status, 200)
+        self.assertFalse(repeated["created"])
+        self.assertEqual(repeated["version"], new_version)
+
+        status, body = self.call("POST", "/api/chain/activate", {"version": old_version})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["active_version"], old_version)
+
+        cycle_payload = {
+            "cabin_id": "cabin-1",
+            "requester": "ops",
+            "zone": "zone-1",
+            "sensor_id": "sensor-1",
+            "samples": [10.0, 20.0],
+            "value": 0.0,
+            "at": "shift-1",
+            "watts": 100.0,
+        }
+        status, old_cycle = self.call("POST", "/api/cycle", cycle_payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(old_cycle["chain_version"], old_version)
+        old_run_id = old_cycle["run_id"]
+
+        status, body = self.call("POST", "/api/chain/activate", {"version": new_version})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["active_version"], new_version)
+
+        cycle_payload["at"] = "shift-2"
+        status, new_cycle = self.call("POST", "/api/cycle", cycle_payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(new_cycle["chain_version"], new_version)
+
+        status, old_runs = self.call("GET", "/api/chain/runs", query={"version": [old_version]})
+        self.assertEqual([run["id"] for run in old_runs["runs"]], [old_run_id])
+        self.assertEqual(old_runs["runs"][0]["chain"]["version"], old_version)
+
+        status, replay = self.call("GET", "/api/chain/replay", query={"version": [old_version]})
+        self.assertEqual(status, 200)
+        self.assertEqual(replay["definition"]["version"], old_version)
+        self.assertTrue(replay["audit"])
+        self.assertTrue(all(item["chain_version"] == old_version for item in replay["audit"]))
+
+        status, detail = self.call("GET", "/api/chain/runs/detail", query={"id": [old_run_id]})
+        self.assertEqual(status, 200)
+        self.assertEqual(detail["run"]["chain"]["version"], old_version)
+        self.assertEqual(detail["run"]["status"], "completed")
+        self.assertEqual(detail["run"]["completed_stages"][-1], "audit")
+
+        restarted = Server(self.store, web_dir="web")
+        response = restarted.dispatch(
+            "GET",
+            "/api/chain/replay",
+            None,
+            {"version": [old_version]},
+        )
+        parsed = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(parsed["definition"]["version"], old_version)
+        self.assertTrue(parsed["runs"])
+        self.assertTrue(parsed["audit"])
+
+    def test_invalid_chain_config_stops_application_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = f"{tmp}/bad-chain.json"
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"name": "bad", "stages": []}, handle)
+            with self.assertRaises(ValueError):
+                Server(self.store, web_dir="web", chain_config_path=path)
 
     def test_pages_redirect_and_errors(self) -> None:
         for page in ("/cabins", "/env", "/patrols", "/alarms"):

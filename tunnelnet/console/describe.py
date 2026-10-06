@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from tunnelnet.ns import control_chain
 from tunnelnet.store import describe_store
 
 if TYPE_CHECKING:  # pragma: no cover - imported only for type checkers
@@ -15,7 +14,7 @@ def collect(rt: "Runtime") -> dict[str, str]:
     """Return one description line per component."""
 
     return {
-        "chain": control_chain().describe(),
+        "chain": rt.chains.get().describe(),
         "store": describe_store(rt.store),
         "namespaces": rt.namespaces.describe(),
         "cabins": rt.cabins.describe(),

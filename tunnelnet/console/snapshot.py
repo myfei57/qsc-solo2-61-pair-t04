@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from tunnelnet.ns import control_chain
 from tunnelnet.store import store_state
 
 if TYPE_CHECKING:  # pragma: no cover - imported only for type checkers
@@ -14,8 +13,11 @@ if TYPE_CHECKING:  # pragma: no cover - imported only for type checkers
 def collect(rt: "Runtime") -> dict[str, object]:
     """Combine every component projection into one document."""
 
+    chain = rt.chains.get()
     return {
-        "chain": [step.as_dict() for step in control_chain().steps()],
+        "chain": [step.as_dict() for step in chain.steps()],
+        "chain_ref": chain.ref().as_dict(),
+        "active_chain_version": chain.version,
         "store": store_state(rt.store).as_dict(),
         "namespaces": {"count": rt.namespaces.count(), "names": rt.namespaces.names()},
         "cabins": rt.cabins.state().as_dict(),

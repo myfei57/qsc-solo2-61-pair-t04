@@ -64,9 +64,16 @@ from tunnelnet.fire import (
     activation_order,
     adjacent_zones,
 )
-from tunnelnet.ns import Chain
+from tunnelnet.ns import (
+    Chain,
+    ChainAssemblyError,
+    ChainRegistry,
+    StageSpec,
+    control_chain,
+    default_chain_document,
+)
 from tunnelnet.ns import Registry as NamespaceRegistry
-from tunnelnet.ns import Stage, control_chain
+from tunnelnet.ns import Stage
 from tunnelnet.patrol import CheckIn, PatrolService, overdue_cabins, progress_ratio
 from tunnelnet.quota import QuotaService, baseline_report, overage_for, peak, rank, total
 from tunnelnet.reporting import audit_export, store_export, telemetry_export, to_csv
@@ -201,6 +208,78 @@ class ChainCase(unittest.TestCase):
         self.assertIsNone(Chain(name="empty", stages=()).last())
         self.assertEqual(Chain(name="empty", stages=()).count(), 0)
         self.assertEqual(str(Stage.FIRE), "fire")
+
+    def test_config_rejects_missing_stage_bad_order_and_cycle(self) -> None:
+        document = default_chain_document()
+        document["stages"] = [stage for stage in document["stages"] if stage["stage"] != "audit"]
+        registry = ChainRegistry()
+        with self.assertRaises(ChainAssemblyError) as missing:
+            registry.install(document, activate=False)
+        self.assertIn("missing required stages", str(missing.exception))
+
+        ordered = default_chain_document()
+        ordered["stages"] = list(reversed(ordered["stages"]))
+        with self.assertRaises(ChainAssemblyError) as order:
+            ChainRegistry().install(ordered, activate=False)
+        self.assertIn("must be before", str(order.exception))
+
+        cyclic = default_chain_document()
+        cyclic["before"].append({"first": "audit", "second": "access"})
+        with self.assertRaises(ChainAssemblyError) as cycle:
+            ChainRegistry().install(cyclic, activate=False)
+        self.assertIn("cycle", str(cycle.exception))
+
+    def test_version_install_is_idempotent_and_history_is_retained(self) -> None:
+        registry = ChainRegistry()
+        first = registry.install(default_chain_document())
+        repeated = registry.install(default_chain_document())
+        self.assertTrue(first.created)
+        self.assertFalse(repeated.created)
+        self.assertEqual(first.chain.version, repeated.chain.version)
+        self.assertEqual(registry.count(), 1)
+
+        changed = default_chain_document()
+        changed["name"] = "second-tunnel-control"
+        second = registry.install(changed)
+        self.assertTrue(second.created)
+        self.assertNotEqual(first.chain.version, second.chain.version)
+        self.assertEqual(registry.active_version, second.chain.version)
+        self.assertEqual(registry.get(first.chain.version).name, "tunnel-control")
+        self.assertEqual(len(registry.versions()), 2)
+
+        changed_again = default_chain_document()
+        changed_again["version"] = first.chain.version
+        changed_again["name"] = "tampered"
+        with self.assertRaises(ValueError):
+            registry.install(changed_again)
+
+    def test_chain_history_and_audit_are_replayed_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store.open(tmp)
+            registry = ChainRegistry.from_store(store, default_chain_document())
+            chain = registry.get()
+            self.assertTrue(store.exists("chain_version", chain.version))
+            self.assertTrue(store.exists("chain_pointer", "active"))
+            registry.activate(chain.version)
+
+            restored = ChainRegistry.from_store(Store.open(tmp))
+            self.assertEqual(restored.active_version, chain.version)
+            self.assertEqual(restored.get().fingerprint, chain.fingerprint)
+            self.assertEqual(restored.count(), 1)
+
+            explicit = default_chain_document()
+            explicit["name"] = "explicit-startup"
+            replaced = ChainRegistry.from_store(Store.open(tmp), explicit)
+            self.assertEqual(replaced.active_version, replaced.get().version)
+            self.assertEqual(replaced.get().name, "explicit-startup")
+
+    def test_stage_spec_and_version_ref(self) -> None:
+        spec = StageSpec.from_value({"stage": "access", "action": "open"})
+        self.assertEqual(spec.stage, Stage.ACCESS)
+        registry = ChainRegistry()
+        installed = registry.install(default_chain_document())
+        self.assertEqual(installed.chain.ref().version, installed.chain.version)
+        self.assertTrue(installed.chain.ref().fingerprint)
 
 
 class CabinCase(unittest.TestCase):
@@ -708,10 +787,24 @@ class ReportingCase(unittest.TestCase):
             store = Store.open(tmp)
             store.save("approval", "a1", {"id": "a1"})
             registry = AuditRegistry()
-            registry.append(Record(id="a1", event="access", at="t1"))
+            registry.append(
+                Record(
+                    id="a1",
+                    event="access",
+                    at="t1",
+                    chain_version="chain-1",
+                    run_id="run-1",
+                    stage="access",
+                )
+            )
             columns, rows = audit_export(registry)
-            self.assertEqual(columns, ["id", "event", "at"])
-            self.assertEqual(rows, [["a1", "access", "t1"]])
+            self.assertEqual(
+                columns,
+                ["id", "event", "at", "chain_name", "chain_version", "chain_fingerprint", "run_id", "stage"],
+            )
+            self.assertEqual(rows[0][1:3], ["access", "t1"])
+            self.assertEqual(rows[0][4], "chain-1")
+            self.assertEqual(rows[0][6:], ["run-1", "access"])
             store_columns, store_rows = store_export(store)
             self.assertEqual(store_columns, ["kind", "records"])
             self.assertEqual(store_rows, [["approval", 1]])

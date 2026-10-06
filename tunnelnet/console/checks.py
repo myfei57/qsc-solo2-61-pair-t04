@@ -18,7 +18,12 @@ def run_checks(rt: "Runtime") -> list[dict[str, str]]:
             "name": "store",
             "status": "ok",
             "detail": f"kinds={len(rt.store.kinds())} records={rt.store.file_count()}",
-        }
+        },
+        {
+            "name": "control_chain",
+            "status": "ok",
+            "detail": f"version={rt.chains.active_version} stages={rt.chains.get().count()}",
+        },
     ]
 
     pending = rt.access.summary()["pending"]

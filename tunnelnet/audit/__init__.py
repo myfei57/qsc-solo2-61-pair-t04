@@ -2,7 +2,7 @@
 
 from .mark import MarkSet
 from .model import Record
-from .query import between, events, filter_records, last, most_recent
+from .query import between, events, filter_records, for_run, for_stage, for_version, last, most_recent
 from .registry import AuditRegistry
 from .report import AuditState
 from .summary import count_by_event, summary
@@ -16,6 +16,9 @@ __all__ = [
     "count_by_event",
     "events",
     "filter_records",
+    "for_run",
+    "for_stage",
+    "for_version",
     "last",
     "most_recent",
     "summary",

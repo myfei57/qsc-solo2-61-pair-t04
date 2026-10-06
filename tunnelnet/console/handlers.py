@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from tunnelnet.audit import between, events, filter_records, last, most_recent
+from tunnelnet.audit import between, events, filter_records, for_run, for_version, last, most_recent
 from tunnelnet.cabin import Cabin, status_summary
 from tunnelnet.cable import danger_count, healthy_count, load_factor
 from tunnelnet.drain import Pit
 from tunnelnet.env import snapshot as env_snapshot
 from tunnelnet.fire import Detector
-from tunnelnet.ns import Stage, control_chain
+from tunnelnet.ns import Stage
 from tunnelnet.reporting import audit_export, telemetry_export, to_csv
 from tunnelnet.reporting import store_export as store_csv_export
 from tunnelnet.store import export_all, export_kind, list_approvals, revoke_approval, summarize
@@ -60,14 +60,103 @@ def report_text(server: "Server", request: Request) -> Response:
 
 
 def chain(server: "Server", request: Request) -> Response:
-    line = control_chain()
+    version = request.query_field("version")
+    line = server.runtime.chains.get(version) if version else server.runtime.chains.get()
+    definition = server.runtime.chains.definition(line.version)
     last_stage = line.last()
     return json_response(
         {
             "name": line.name,
+            "version": line.version,
+            "fingerprint": line.fingerprint,
+            "policy": {"activation": "cycle_boundary", "history": "all_versions"},
+            "active": line.version == server.runtime.chains.active_version,
             "steps": [step.as_dict() for step in line.steps()],
+            "before": [[first.value, second.value] for first, second in definition.before],
+            "required_stages": sorted(stage.value for stage in definition.required_stages),
             "ordered": line.before(Stage.ACCESS, Stage.FIRE),
             "last_stage": "" if last_stage is None else last_stage.value,
+        }
+    )
+
+
+def chain_versions(server: "Server", request: Request) -> Response:
+    return json_response(
+        {
+            "active_version": server.runtime.chains.active_version,
+            "versions": server.runtime.chains.history(),
+        }
+    )
+
+
+def chain_publish(server: "Server", request: Request) -> Response:
+    payload = request.payload
+    activate = bool(payload.get("activate", True))
+    result = server.runtime.chains.install(payload, activate=activate)
+    return json_response(
+        {
+            "created": result.created,
+            "activated": result.activated,
+            "active_version": server.runtime.chains.active_version,
+            "version": result.chain.version,
+            "fingerprint": result.chain.fingerprint,
+            "chain": {
+                "name": result.chain.name,
+                "steps": [step.as_dict() for step in result.chain.steps()],
+            },
+        }
+    )
+
+
+def chain_activate(server: "Server", request: Request) -> Response:
+    version = request.str_field("version")
+    if not version:
+        raise RequestError(400, "version is required")
+    chain = server.runtime.chains.activate(version)
+    return json_response({"active_version": chain.version, "fingerprint": chain.fingerprint})
+
+
+def chain_runs(server: "Server", request: Request) -> Response:
+    runs = server.runtime.runs.list()
+    version = request.query_field("version")
+    if version:
+        runs = server.runtime.runs.for_version(version)
+    return json_response({"runs": [run.as_dict() for run in runs], "count": len(runs)})
+
+
+def chain_run_detail(server: "Server", request: Request) -> Response:
+    run_id = request.query_field("id")
+    if not run_id:
+        raise RequestError(400, "id is required")
+    run = server.runtime.runs.get(run_id)
+    records = for_run(server.runtime.audit.records(), run_id)
+    definition = server.runtime.chains.definition(run.chain.version)
+    return json_response(
+        {
+            **server.runtime.runs.replay(run_id),
+            "definition": definition.as_dict(),
+            "audit": [record.as_dict() for record in records],
+        }
+    )
+
+
+def chain_replay(server: "Server", request: Request) -> Response:
+    version = request.query_field("version", server.runtime.chains.active_version)
+    definition = server.runtime.chains.definition(version)
+    chain = server.runtime.chains.get(version)
+    records = for_version(server.runtime.audit.records(), version)
+    runs = server.runtime.runs.for_version(version)
+    return json_response(
+        {
+            "definition": definition.as_dict(),
+            "chain": {
+                "name": chain.name,
+                "version": chain.version,
+                "steps": [step.as_dict() for step in chain.steps()],
+            },
+            "runs": [run.as_dict() for run in runs],
+            "audit": [record.as_dict() for record in records],
+            "audit_count": len(records),
         }
     )
 
@@ -685,6 +774,12 @@ def audit_query(server: "Server", request: Request) -> Response:
     end = request.query_field("end")
     if start and end:
         payload["between"] = [record.as_dict() for record in between(records, start, end)]
+    version = request.query_field("chain_version")
+    if version:
+        payload["by_chain_version"] = [record.as_dict() for record in for_version(records, version)]
+    run_id = request.query_field("run_id")
+    if run_id:
+        payload["by_run"] = [record.as_dict() for record in for_run(records, run_id)]
     return json_response(payload)
 
 

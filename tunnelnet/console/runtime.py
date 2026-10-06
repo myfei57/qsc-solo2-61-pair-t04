@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from tunnelnet.access import AccessService
 from tunnelnet.audit import AuditRegistry, MarkSet
 from tunnelnet.cabin import PartitionTable, PowerBook, Registry as CabinRegistry, SuppressionLog
@@ -9,7 +11,7 @@ from tunnelnet.cable import CableRegistry, MovingAverage
 from tunnelnet.drain import DrainService, PumpUnit
 from tunnelnet.env import Environment
 from tunnelnet.fire import FireService
-from tunnelnet.ns import Registry as NamespaceRegistry
+from tunnelnet.ns import ChainRegistry, Registry as NamespaceRegistry, RunRegistry
 from tunnelnet.patrol import PatrolService
 from tunnelnet.quota import QuotaService
 from tunnelnet.store import Store
@@ -22,8 +24,10 @@ DEFAULT_THRESHOLD = 75.0
 class Runtime:
     """Owns one instance of each control component for a single store."""
 
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store: Store, chain_config: Mapping[str, object] | None = None) -> None:
         self.store = store
+        self.chains = ChainRegistry.from_store(store, None if chain_config is None else dict(chain_config))
+        self.runs = RunRegistry(store)
         self.namespaces = NamespaceRegistry()
         self.cabins = CabinRegistry()
         self.partitions = PartitionTable()
@@ -40,4 +44,4 @@ class Runtime:
         self.patrol = PatrolService(self.cabins)
         self.power_book = PowerBook()
         self.quota = QuotaService(self.cabins, self.power_book)
-        self.audit = AuditRegistry()
+        self.audit = AuditRegistry(store)
