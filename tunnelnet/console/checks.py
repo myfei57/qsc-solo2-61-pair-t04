@@ -21,6 +21,22 @@ def run_checks(rt: "Runtime") -> list[dict[str, str]]:
         }
     ]
 
+    active = rt.chains.active_ref()
+    if active is None:
+        checks.append({"name": "chain", "status": "fail", "detail": "no active chain"})
+    else:
+        open_instances = len(rt.chains.open_instances())
+        checks.append(
+            {
+                "name": "chain",
+                "status": "ok",
+                "detail": (
+                    f"active={active.chain_id} digest={active.digest} "
+                    f"versions={rt.chains.catalog().count()} open_cycles={open_instances}"
+                ),
+            }
+        )
+
     pending = rt.access.summary()["pending"]
     checks.append(
         {

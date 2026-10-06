@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Callable, Iterable
 
+from tunnelnet.chain import ChainConfig
+from tunnelnet.chain.validation import InvalidChain
 from tunnelnet.store import Store
 
 from . import handlers
@@ -18,8 +20,19 @@ from .seed import seed_defaults
 class Server:
     """Owns the runtime state and dispatches console requests."""
 
-    def __init__(self, store: Store, web_dir: str = "web") -> None:
+    def __init__(
+        self,
+        store: Store,
+        web_dir: str = "web",
+        chain_config: ChainConfig | None = None,
+    ) -> None:
         self.runtime = Runtime(store)
+        # Assemble and validate the configured chain before serving anything:
+        # a missing stage, broken ordering or a cycle refuses the boot.
+        try:
+            self.runtime.chains.bootstrap(chain_config)
+        except InvalidChain as exc:
+            raise ChainConfigurationError(str(exc)) from exc
         seed_defaults(self.runtime)
         self.web_dir = web_dir
         self.router = Router()
@@ -86,7 +99,15 @@ class Server:
         return [response.body]
 
 
-def create_application(store: Store, web_dir: str = "web") -> Server:
+def create_application(
+    store: Store,
+    web_dir: str = "web",
+    chain_config: ChainConfig | None = None,
+) -> Server:
     """Build a ready to serve console for the supplied store."""
 
-    return Server(store, web_dir)
+    return Server(store, web_dir, chain_config)
+
+
+class ChainConfigurationError(RuntimeError):
+    """Raised when the configured control chain fails boot validation."""

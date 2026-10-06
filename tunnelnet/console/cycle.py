@@ -1,8 +1,12 @@
-"""One full tunnel control cycle walked in chain order."""
+"""One full tunnel control cycle walked in chain order.
+
+The cycle pins the chain version active at start time. Every audit row it
+writes and the persisted cycle instance carry that same :class:`ChainRef`,
+and publishing a new chain while the cycle runs cannot change the stages the
+instance was opened with.
+"""
 
 from __future__ import annotations
-
-from tunnelnet.ns import Stage, control_chain
 
 from .audit_log import record_event
 from .http import Request, Response, json_response
@@ -10,7 +14,7 @@ from .runtime import Runtime
 
 
 def run_cycle(rt: Runtime, request: Request) -> Response:
-    """Walk the whole chain once, in production order."""
+    """Walk the whole chain once, on the version pinned when it starts."""
 
     cabin_id = request.str_field("cabin_id")
     requester = request.str_field("requester", "operator")
@@ -23,27 +27,36 @@ def run_cycle(rt: Runtime, request: Request) -> Response:
 
     reading = sum(samples) / len(samples) if samples else fallback
 
-    approval = rt.access.approve(cabin_id, requester)
-    record_event(rt, "access_approved", approval.id)
+    # Pin before any stage action: the ref below never changes even if a new
+    # chain version is published mid-cycle.
+    instance = rt.chains.start_cycle(cabin_id)
+    try:
+        approval = rt.access.approve(cabin_id, requester)
+        record_event(
+            rt,
+            "access_approved",
+            approval.id,
+            instance=instance,
+            stage="access",
+        )
 
-    alarmed = rt.env.sample(sensor_id, reading, at)
+        alarmed = rt.env.sample(sensor_id, reading, at)
 
-    zones = rt.fire.activate_zones(zone)
-    rt.fire.handle_smoke(zone)
-    raised = rt.fire.raise_alarm(f"{zone}:{at}")
+        zones = rt.fire.activate_zones(zone)
+        rt.fire.handle_smoke(zone)
+        raised = rt.fire.raise_alarm(f"{zone}:{at}")
 
-    rt.patrol.check_in(cabin_id, at)
+        rt.patrol.check_in(cabin_id, at)
 
-    usage = rt.quota.add_usage(cabin_id, watts)
+        usage = rt.quota.add_usage(cabin_id, watts)
 
-    rt.drain.start_drain(cabin_id)
-    rt.drain.record_cycle(cabin_id, at)
+        rt.drain.start_drain(cabin_id)
+        rt.drain.record_cycle(cabin_id, at)
 
-    record_event(rt, "cycle", cabin_id)
-    line = control_chain()
+        record_event(rt, "cycle", cabin_id, instance=instance, stage=instance.stages[-1])
 
-    return json_response(
-        {
+        chain = rt.chains.chain_for_instance(instance.id)
+        result = {
             "approval": approval.id,
             "alarmed": alarmed,
             "reading": reading,
@@ -53,6 +66,16 @@ def run_cycle(rt: Runtime, request: Request) -> Response:
             "usage": usage,
             "drain_runs": rt.drain.run_count(),
             "audit_count": rt.audit.count(),
-            "last_stage": Stage.AUDIT.value if line.contains(Stage.AUDIT) else "",
+            "last_stage": chain.last() or "",
         }
-    )
+        rt.chains.finish_cycle(instance, result)
+    except Exception:
+        rt.chains.fail_cycle(instance, "cycle aborted")
+        raise
+
+    payload: dict[str, object] = {
+        **result,
+        "cycle_id": instance.id,
+        "chain": instance.chain.as_dict(),
+    }
+    return json_response(payload)

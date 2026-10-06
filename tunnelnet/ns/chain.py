@@ -1,19 +1,21 @@
-"""Ordered control chain and the action performed at each stage."""
+"""Ordered control chain and the action performed at each stage.
+
+Kept for compatibility with components still referring to the :class:`Stage`
+enum; the canonical order now comes from the configurable chain package
+(:mod:`tunnelnet.chain`) so this legacy view can never drift out of sync. New
+code should use ``runtime.chains.active()`` instead of ``control_chain()``.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from tunnelnet.chain.config import DEFAULT_STAGE_ACTIONS, DEFAULT_STAGE_ORDER
+
 from .stages import Stage
 
 STAGE_ACTIONS: dict[Stage, str] = {
-    Stage.ACCESS: "approve and release the cabin door",
-    Stage.ENVIRONMENT: "sample the environment and route alarms",
-    Stage.VENTILATION: "run the ventilation bank",
-    Stage.FIRE: "link the fire zones",
-    Stage.PATROL: "walk the patrol route",
-    Stage.ENERGY: "meter cabin power",
-    Stage.AUDIT: "record the linkage audit",
+    Stage(value): DEFAULT_STAGE_ACTIONS[value] for value in DEFAULT_STAGE_ORDER
 }
 
 
@@ -65,17 +67,9 @@ class Chain:
 
 
 def control_chain() -> Chain:
-    """Return the canonical ordering of the tunnel control stages."""
+    """Return the canonical ordering derived from the default chain config."""
 
     return Chain(
         name="tunnel-control",
-        stages=(
-            Stage.ACCESS,
-            Stage.ENVIRONMENT,
-            Stage.VENTILATION,
-            Stage.FIRE,
-            Stage.PATROL,
-            Stage.ENERGY,
-            Stage.AUDIT,
-        ),
+        stages=tuple(Stage(value) for value in DEFAULT_STAGE_ORDER),
     )

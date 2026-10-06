@@ -6,6 +6,7 @@ from tunnelnet.access import AccessService
 from tunnelnet.audit import AuditRegistry, MarkSet
 from tunnelnet.cabin import PartitionTable, PowerBook, Registry as CabinRegistry, SuppressionLog
 from tunnelnet.cable import CableRegistry, MovingAverage
+from tunnelnet.chain import ChainManager
 from tunnelnet.drain import DrainService, PumpUnit
 from tunnelnet.env import Environment
 from tunnelnet.fire import FireService
@@ -24,6 +25,7 @@ class Runtime:
 
     def __init__(self, store: Store) -> None:
         self.store = store
+        self.chains = ChainManager(store)
         self.namespaces = NamespaceRegistry()
         self.cabins = CabinRegistry()
         self.partitions = PartitionTable()

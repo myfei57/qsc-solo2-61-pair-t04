@@ -49,13 +49,13 @@ class ConsoleCase(unittest.TestCase):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
         self.assertEqual(health["status"], "ok")
-        self.assertEqual(health["kinds"], [])
+        self.assertEqual(health["kinds"], ["chain", "chain_cursor"])
 
         status, checks = self.call("GET", "/api/health/checks")
         self.assertEqual(status, 200)
         self.assertEqual(
             {check["name"] for check in checks["checks"]},
-            {"store", "access", "drain", "ventilation", "fire", "patrol", "quota", "cables", "environment", "audit"},
+            {"chain", "store", "access", "drain", "ventilation", "fire", "patrol", "quota", "cables", "environment", "audit"},
         )
 
         status, snapshot = self.call("GET", "/api/snapshot")
@@ -64,6 +64,7 @@ class ConsoleCase(unittest.TestCase):
             set(snapshot),
             {
                 "chain",
+                "chain_ref",
                 "store",
                 "namespaces",
                 "cabins",
@@ -80,6 +81,8 @@ class ConsoleCase(unittest.TestCase):
                 "audit",
             },
         )
+        self.assertEqual(snapshot["chain_ref"]["name"], "tunnel-control")
+        self.assertEqual(len(snapshot["chain"]), 7)
 
         status, describe = self.call("GET", "/api/describe")
         self.assertEqual(status, 200)

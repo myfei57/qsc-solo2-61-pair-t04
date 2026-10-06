@@ -7,10 +7,17 @@ from typing import TYPE_CHECKING
 from tunnelnet.audit import between, events, filter_records, last, most_recent
 from tunnelnet.cabin import Cabin, status_summary
 from tunnelnet.cable import danger_count, healthy_count, load_factor
+from tunnelnet.chain import (
+    InvalidChain,
+    VersionExists,
+    VersionMissing,
+    load_config,
+    replay as replay_cycle,
+    replay_version,
+)
 from tunnelnet.drain import Pit
 from tunnelnet.env import snapshot as env_snapshot
 from tunnelnet.fire import Detector
-from tunnelnet.ns import Stage, control_chain
 from tunnelnet.reporting import audit_export, telemetry_export, to_csv
 from tunnelnet.reporting import store_export as store_csv_export
 from tunnelnet.store import export_all, export_kind, list_approvals, revoke_approval, summarize
@@ -60,16 +67,114 @@ def report_text(server: "Server", request: Request) -> Response:
 
 
 def chain(server: "Server", request: Request) -> Response:
-    line = control_chain()
+    line = server.runtime.chains.active()
     last_stage = line.last()
     return json_response(
         {
             "name": line.name,
-            "steps": [step.as_dict() for step in line.steps()],
-            "ordered": line.before(Stage.ACCESS, Stage.FIRE),
-            "last_stage": "" if last_stage is None else last_stage.value,
+            "version": line.version,
+            "digest": line.digest,
+            "ref": line.ref.as_dict(),
+            "steps": line.steps(),
+            "ordered": line.before("access", "fire"),
+            "last_stage": "" if last_stage is None else last_stage,
         }
     )
+
+
+def chain_versions(server: "Server", request: Request) -> Response:
+    manager = server.runtime.chains
+    active = manager.active_ref()
+    return json_response(
+        {
+            "active": None if active is None else active.as_dict(),
+            "versions": [
+                {
+                    "ref": version.ref.as_dict(),
+                    "stages": list(version.stages),
+                    "note": version.note,
+                }
+                for version in manager.history()
+            ],
+        }
+    )
+
+
+def chain_publish(server: "Server", request: Request) -> Response:
+    """Assemble a chain definition from configuration and store it.
+
+    The new version is validated (completeness, ordering, cycles) but is not
+    activated: running cycles keep their pinned version. Publishing the same
+    version again is a no-op, so repeated assembly is idempotent.
+    """
+
+    config = _chain_config(request)
+    try:
+        version, added = server.runtime.chains.publish(config)
+    except (InvalidChain, VersionExists) as exc:
+        raise RequestError(400, str(exc)) from exc
+    record_event(server.runtime, "chain_published", version.chain_id)
+    return json_response({"published": added, "ref": version.ref.as_dict()})
+
+
+def chain_activate(server: "Server", request: Request) -> Response:
+    """Activate a version.
+
+    Either submit a full configuration document (assembled then activated) or
+    an existing ``chain_id``. Only cycles started afterwards use the new
+    version; in-flight cycles finish on the chain they pinned at start.
+    """
+
+    chain_id = request.str_field("chain_id")
+    try:
+        if chain_id:
+            version = server.runtime.chains.activate_version(chain_id)
+            added = False
+        else:
+            version, added = server.runtime.chains.activate(_chain_config(request))
+    except (InvalidChain, VersionExists, VersionMissing) as exc:
+        raise RequestError(400, str(exc)) from exc
+    record_event(server.runtime, "chain_activated", version.chain_id)
+    return json_response({"activated": True, "published": added, "ref": version.ref.as_dict()})
+
+
+def chain_instances(server: "Server", request: Request) -> Response:
+    return json_response(
+        {"items": [instance.as_dict() for instance in server.runtime.chains.instances()]}
+    )
+
+
+def chain_replay(server: "Server", request: Request) -> Response:
+    """Resolve a historical cycle (or every cycle of a version) to its chain."""
+
+    instance_id = request.query_field("cycle_id")
+    chain_id = request.query_field("chain_id")
+    manager = server.runtime.chains
+    rows = [row.as_dict() for row in server.runtime.audit.records()]
+    try:
+        if instance_id:
+            return json_response(replay_cycle(manager, instance_id, rows).as_dict())
+        if chain_id:
+            return json_response(
+                {"items": [result.as_dict() for result in replay_version(manager, chain_id, rows)]}
+            )
+    except KeyError as exc:
+        raise RequestError(404, str(exc)) from exc
+    raise RequestError(400, "cycle_id or chain_id is required")
+
+
+def _chain_config(request: Request) -> object:
+    config_payload = request.payload.get("config", request.payload)
+    if isinstance(config_payload, str):
+        return load_config(config_payload)
+    if not isinstance(config_payload, dict):
+        raise RequestError(400, "field 'config' must be an object or a JSON string")
+    from tunnelnet.chain.config import from_mapping
+
+    try:
+        return from_mapping(config_payload)
+    except ValueError as exc:
+        raise RequestError(400, str(exc)) from exc
 
 
 def catalog(server: "Server", request: Request) -> Response:
@@ -685,6 +790,16 @@ def audit_query(server: "Server", request: Request) -> Response:
     end = request.query_field("end")
     if start and end:
         payload["between"] = [record.as_dict() for record in between(records, start, end)]
+    chain_id = request.query_field("chain_id")
+    if chain_id:
+        payload["for_chain"] = [
+            record.as_dict() for record in records if record.chain_id == chain_id
+        ]
+    cycle_id = request.query_field("cycle_id")
+    if cycle_id:
+        payload["for_cycle"] = [
+            record.as_dict() for record in records if record.cycle_id == cycle_id
+        ]
     return json_response(payload)
 
 

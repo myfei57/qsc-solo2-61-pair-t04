@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from tunnelnet.ns import control_chain
 from tunnelnet.store import describe_store
 
 if TYPE_CHECKING:  # pragma: no cover - imported only for type checkers
@@ -14,8 +13,10 @@ if TYPE_CHECKING:  # pragma: no cover - imported only for type checkers
 def collect(rt: "Runtime") -> dict[str, str]:
     """Return one description line per component."""
 
+    active = rt.chains.active_ref()
+    chain_line = "no active chain" if active is None else f"chain {active.chain_id} digest={active.digest}"
     return {
-        "chain": control_chain().describe(),
+        "chain": chain_line,
         "store": describe_store(rt.store),
         "namespaces": rt.namespaces.describe(),
         "cabins": rt.cabins.describe(),
